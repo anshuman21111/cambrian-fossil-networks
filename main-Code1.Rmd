@@ -1,0 +1,855 @@
+---
+title: "FossilNet"
+author: "Anshuman"
+date: "9/24/2018"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+
+```{r}
+D = read.csv(file = "/Users/anshumanswain/Downloads/fossil_counts_new2.csv", sep = ',', header = TRUE)   
+save(D, file="/Users/anshumanswain/Downloads/fossil_counts4.rda")
+
+#load('/Users/anshumanswain/Downloads/fossil_counts4.rda')
+Count_data=D
+print(table(Count_data$Depth))
+print("Stratifications")
+print(table(Count_data$Depth))
+Count_data$Taxon= as.character(Count_data$Taxon)
+Count_data$Depth= as.numeric(Count_data$Depth)
+Count_data$Section=as.numeric(Count_data$Section)
+
+```
+```{r}
+print("Taxa")
+print(table(Count_data$Taxon))
+```
+```{r message=FALSE, warning=FALSE, error=FALSE}
+library(igraph)
+#get depth in numeric format
+depth = as.numeric(gsub("m","",Count_data$Depth))
+
+
+#define depth groups as discussed A,B,C,D
+ranges = matrix(c(7.4,8.6,9.5,11.6,8.5,9.4,11.6,16.7),4,2)
+rownames(ranges) = c("A","B","C","D")
+
+#number of taxa in the dataset
+no_of_taxa = length(unique(Count_data$Taxon))
+
+#define an empty list of adjacency matrices. (This is where the results are stored)
+corr_mats = list()
+comm_mats = list()
+graph_list_org = list()
+graph_list_sim =list()
+troint= list()
+
+#loop through each group
+for(group in c("A","B","C")){
+  
+#generate a count matrix for current group
+mat = matrix(0,0,length(unique(Count_data$Taxon)))
+
+#start and end depth of the group
+start = ranges[group,1]
+end = ranges[group,2]
+
+#extract counts in chunks of 30cm
+for(i in seq(start,(end-0.2),0.2)){
+  r = rep(0,no_of_taxa); names(r) = unique(Count_data$Taxon)
+  for(j in seq(i,i+0.1,0.1)){
+    idx = which(depth == j)
+    r[Count_data$Taxon[idx]] = r[Count_data$Taxon[idx]] + Count_data$count[idx]
+  }
+  mat = rbind(mat,r)
+}
+
+#generate pseudo-counts by random bootstrap process, 1000 iterations
+bootstrap = sapply(seq(1000), function(i){
+  null = t(apply(mat,1,function(x) {
+    #obtain rl string for the stratum
+    rlstr = c()
+    new_count = rep(0,ncol(mat)); names(new_count) = unique(Count_data$Taxon)
+    for(count in x){
+      if(count > 0){
+        idx = which(x == count)
+        rlstr = c(rlstr,rep(unique(Count_data$Taxon)[idx],count))
+      }
+    }
+    #sanity check: see if any fossils exist at this level
+    if(length(rlstr) > 0){
+      #perform a sample with replacement
+      rlstr = sample(rlstr,replace = T)
+      counts = table(rlstr)
+      new_count[names(counts)] = counts
+      return(as.numeric(new_count))
+    }
+    else{
+      return(x)
+    }
+  }))
+  #obtain fossil co-abundance adjacency matrix based on pseudo counts
+  cc = suppressWarnings(cor(null))
+  
+  #set diagnals of the matrix to 0
+  diag(cc) = 0
+  
+  #return adjacency matrix flattened as a vector
+  return(as.vector(cc))
+})
+
+corr_mats[[group]] = matrix(rowMeans(bootstrap),nrow = no_of_taxa,ncol = no_of_taxa)
+
+rownames(corr_mats[[group]])<- unique(Count_data$Taxon)
+colnames(corr_mats[[group]])<- unique(Count_data$Taxon)
+
+#print the mean correlations between taxa obtained after the bootstrap process
+print(lattice::levelplot(corr_mats[[group]], scales=list(x = list(cex = .3,rot = 90),y = list(cex=.3)), at = seq(-1,1,0.1),colorkey = list(col = colorRampPalette(c("blue","white","red"))),col.regions = colorRampPalette(c("blue","white","red"))))
+
+corr_mats[[group]][!is.finite(corr_mats[[group]])] <- 0
+
+amat= corr_mats[[group]]
+zmat <- matrix(0, ncol = nrow(corr_mats[[group]]), nrow = nrow(corr_mats[[group]]))
+pmat <- matrix(0, ncol = nrow(corr_mats[[group]]), nrow = nrow(corr_mats[[group]]))
+
+n <- ncol(corr_mats[[group]])
+for (i in 1:nrow(corr_mats[[group]])) {
+  for (j in i:nrow(corr_mats[[group]])) {
+    zmat[i, j] <- atanh(corr_mats[[group]][i, j])
+    zmat[j, i] <- zmat[i, j]
+    pmat[i, j] <- 2 * pnorm(abs(zmat[i, j]), 0, sqrt(1/(n-3)), lower.tail=FALSE)
+    pmat[j, i] <- pmat[i, j]
+  }
+}
+
+
+n <- length(pmat)
+pcorrmat <- matrix(0, dim(amat)[1], dim(amat)[2])
+for(i in 1:nrow(amat)){ 
+  for(j in 1:nrow(amat)){
+    rowi <- amat[i, -c(i, j)]
+    rowj <- amat[j, -c(i, j)] 
+    tmp <- (amat[i, j] - rowi * rowj) / sqrt((1 - rowi^2) * (1 - rowj^2)) 
+    tmp.zvals <- (0.5) * log((1 + tmp) / (1 - tmp)) 
+    tmp.s.zvals <- sqrt(n - 1 - 3) * tmp.zvals 
+    tmp.pvals <- 2 * pnorm(abs(tmp.s.zvals), 0, 1, lower.tail = FALSE) 
+    pcorrmat[i, j] <- max(tmp.pvals)
+  } 
+}
+
+pcorradjmat_BH <- matrix(p.adjust(pcorrmat, method = "BH", n = length(pcorrmat)), nrow = nrow(corr_mats[[group]]), ncol = nrow(corr_mats[[group]]))
+
+pcorr_graph_BH <- matrix(as.numeric(pcorradjmat_BH < 0.01), nrow = nrow(corr_mats[[group]]), ncol = nrow(corr_mats[[group]]))
+
+comm_mats[[group]]=pcorr_graph_BH
+#comm_mats[[group]] = matrix(rmTest(rowMeans(bootstrap)),nrow = no_of_taxa,ncol = no_of_taxa)
+#comm_mats[[group]] <- ceiling(0.5 * (comm_mats[[group]] + t(comm_mats[[group]])))
+graphRM <- graph_from_adjacency_matrix(comm_mats[[group]], mode = "undirected", weighted = NULL, diag = TRUE, add.colnames = NULL, add.rownames = NA)
+
+graph_list_org[[group]]=graphRM
+
+graphRM <- delete_vertices(simplify(graphRM), degree(graphRM)==0)
+
+V(graphRM)$frame.color <- "white"
+V(graphRM)$label <- ""
+V(graphRM)$color <- "orange"
+V(graphRM)$size <- 10
+E(graphRM)$arrow.mode <- 0
+
+graph_list_sim[[group]]=graphRM
+
+coordsRM = layout_with_fr(graphRM)
+
+
+
+print("Random Walk:")
+communities =  graphRM %>% 
+  cluster_walktrap(weights = NULL, steps = 4,
+  merges = TRUE, modularity = TRUE, membership = TRUE)
+plot(communities, graphRM, layout=coordsRM)
+
+print("Betweenness:")
+communities = graphRM %>% 
+  cluster_edge_betweenness(weights = NULL, directed = FALSE,
+  edge.betweenness = TRUE, merges = TRUE, bridges = TRUE,
+  modularity = TRUE, membership = TRUE)
+plot(communities, graphRM, layout=coordsRM)
+
+#print("Modularity:")
+#communities = graphRM %>% 
+#  cluster_optimal(weights = NULL)
+#plot(communities, graphRM, layout=coordsRM)
+#print((communities))
+
+print("Louvain:")
+communities = graphRM %>% 
+  cluster_louvain(weights = NULL)
+plot(communities, graphRM, layout=coordsRM)
+
+
+print("Eigen:")
+communities = graphRM %>% 
+  cluster_leading_eigen(steps = -1, weights = NULL, start = NULL,
+  options = arpack_defaults, callback = NULL, extra = NULL,
+  env = parent.frame())
+plot(communities, graphRM, layout=coordsRM)
+
+
+print("Greedy:")
+communities = graphRM %>% 
+  cluster_fast_greedy(merges = TRUE, modularity = TRUE,
+  membership = TRUE)
+plot(communities, graphRM, layout=coordsRM)
+
+#print("Spinglass:")
+#communities = graph_from_adjacency_matrix(comm_mats[[group]], mode = "undirected", weighted = NULL, diag = TRUE, add.colnames = NULL, add.rownames = NA) %>% 
+#  cluster_spinglass(weights = NULL, vertex = NULL, spins = 25,
+#  parupdate = FALSE, start.temp = 1, stop.temp = 0.01, cool.fact = 0.99,
+#  update.rule = c("config", "random", "simple"), gamma = 1,
+#  implementation = c("orig", "neg"), gamma.minus = 1)
+#print((communities))
+
+
+  #cluster_edge_betweenness(weights = NULL, directed = FALSE,
+  #edge.betweenness = TRUE, merges = TRUE, bridges = TRUE,
+  #modularity = TRUE, membership = TRUE)
+#print((communities))
+#print(membership(communities))
+#comm_mats[[group]] = matrix(rmNegTest(rowMeans(bootstrap)),nrow = no_of_taxa,ncol = no_of_taxa)
+#comm_mats[[group]] <- ceiling(0.5 * (comm_mats[[group]] + t(comm_mats[[group]])))
+#communities = graph_from_adjacency_matrix(comm_mats[[group]], mode = "undirected", weighted = NULL, diag = TRUE, add.colnames = NULL, add.rownames = NA) %>% cluster_edge_betweenness(weights = NULL, directed = FALSE,
+#  edge.betweenness = TRUE, merges = TRUE, bridges = TRUE,
+#  modularity = TRUE, membership = TRUE)
+#print(membership(communities))
+
+
+#SBM
+library(mixer)
+set.seed(1)
+
+meta = read.table("/Users/anshumanswain/Downloads/Data_fossil.txt", sep="\t", header=TRUE, stringsAsFactors = F)
+meta.ordered <- meta[match(vertex_attr(graphRM)[["name"]], meta$NAME),]
+for (name in colnames(meta)){
+  graphRM <- set_vertex_attr(graphRM, name, index = V(graphRM), meta[,name])
+}
+
+graph_list_sim[[group]]=graphRM
+
+troint.sbm<- mixer(as.matrix(get.adjacency(graphRM)), qmin=3, qmax=8)
+troint.sbm.output <- getModel(troint.sbm)
+troint[[group]] = troint.sbm.output
+troint.sbm.output$q
+
+plot(troint.sbm, frame=1)
+plot(troint.sbm, frame=2)
+plot(troint.sbm, frame=3)
+
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$LIFE_HABIT1), frame=4, classes.col = unique(as.factor(V(graphRM)$LIFE_HABIT1)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$LIFE_HABIT1)), pch=c(16,16),col=unique(as.factor(V(graphRM)$LIFE_HABIT1)), cex=0.8, text.font=4, bg='white', title = "Habitat")
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$PHYLUM), frame=4, classes.col = unique(as.factor(V(graphRM)$PHYLUM)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$PHYLUM)), pch=c(16,16),col=unique(as.factor(V(graphRM)$PHYLUM)), cex=0.8, text.font=4, bg='white', title = "Phylum")
+
+
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$FEED2), frame=4, classes.col = unique(as.factor(V(graphRM)$FEED2)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$FEED2)), pch=c(16,16),col=unique(as.factor(V(graphRM)$FEED2)), cex=0.8, text.font=4, bg='white', title = "Feeding Habits")
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$FEED1), frame=4, classes.col = unique(as.factor(V(graphRM)$FEED1)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$FEED1)), pch=c(16,16),col=unique(as.factor(V(graphRM)$FEED1)), cex=0.8, text.font=4, bg='white', title = "Feeding Habits")
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$MODE_MOV), frame=4, classes.col = unique(as.factor(V(graphRM)$MODE_MOV)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$MODE_MOV)), pch=c(16,16),col=unique(as.factor(V(graphRM)$MODE_MOV)), cex=0.8, text.font=4, bg='white', title = "Feeding Habits")
+
+}
+```
+
+
+
+```{r}
+
+
+#loop through each group
+for(group in c("D")){
+  
+#generate a count matrix for current group
+mat = matrix(0,0,length(unique(Count_data$Taxon)))
+
+#start and end depth of the group
+start = ranges[group,1]
+end = ranges[group,2]
+
+#extract counts in chunks of 30cm
+for(i in seq(start,(end-0.4),0.4)){
+  r = rep(0,no_of_taxa); names(r) = unique(Count_data$Taxon)
+  for(j in seq(i,i+0.3,0.1)){
+    idx = which(depth == j)
+    r[Count_data$Taxon[idx]] = r[Count_data$Taxon[idx]] + Count_data$count[idx]
+  }
+  mat = rbind(mat,r)
+}
+
+
+#generate pseudo-counts by random bootstrap process, 1000 iterations
+bootstrap = sapply(seq(1000), function(i){
+  null = t(apply(mat,1,function(x) {
+    #obtain rl string for the stratum
+    rlstr = c()
+    new_count = rep(0,ncol(mat)); names(new_count) = unique(Count_data$Taxon)
+    for(count in x){
+      if(count > 0){
+        idx = which(x == count)
+        rlstr = c(rlstr,rep(unique(Count_data$Taxon)[idx],count))
+      }
+    }
+    #sanity check: see if any fossils exist at this level
+    if(length(rlstr) > 0){
+      #perform a sample with replacement
+      rlstr = sample(rlstr,replace = T)
+      counts = table(rlstr)
+      new_count[names(counts)] = counts
+      return(as.numeric(new_count))
+    }
+    else{
+      return(x)
+    }
+  }))
+  #obtain fossil co-abundance adjacency matrix based on pseudo counts
+  cc = suppressWarnings(cor(null))
+  
+  #set diagnals of the matrix to 0
+  diag(cc) = 0
+  
+  #return adjacency matrix flattened as a vector
+  return(as.vector(cc))
+})
+
+corr_mats[[group]] = matrix(rowMeans(bootstrap),nrow = no_of_taxa,ncol = no_of_taxa)
+
+rownames(corr_mats[[group]])<- unique(Count_data$Taxon)
+colnames(corr_mats[[group]])<- unique(Count_data$Taxon)
+
+#print the mean correlations between taxa obtained after the bootstrap process
+print(lattice::levelplot(corr_mats[[group]], scales=list(x = list(cex = .3,rot = 90),y = list(cex=.3)), at = seq(-1,1,0.1),colorkey = list(col = colorRampPalette(c("blue","white","red"))),col.regions = colorRampPalette(c("blue","white","red"))))
+
+corr_mats[[group]][!is.finite(corr_mats[[group]])] <- 0
+
+amat= corr_mats[[group]]
+zmat <- matrix(0, ncol = nrow(corr_mats[[group]]), nrow = nrow(corr_mats[[group]]))
+pmat <- matrix(0, ncol = nrow(corr_mats[[group]]), nrow = nrow(corr_mats[[group]]))
+
+n <- ncol(corr_mats[[group]])
+for (i in 1:nrow(corr_mats[[group]])) {
+  for (j in i:nrow(corr_mats[[group]])) {
+    zmat[i, j] <- atanh(corr_mats[[group]][i, j])
+    zmat[j, i] <- zmat[i, j]
+    pmat[i, j] <- 2 * pnorm(abs(zmat[i, j]), 0, sqrt(1/(n-3)), lower.tail=FALSE)
+    pmat[j, i] <- pmat[i, j]
+  }
+}
+
+
+n <- length(pmat)
+pcorrmat <- matrix(0, dim(amat)[1], dim(amat)[2])
+for(i in 1:nrow(amat)){ 
+  for(j in 1:nrow(amat)){
+    rowi <- amat[i, -c(i, j)]
+    rowj <- amat[j, -c(i, j)] 
+    tmp <- (amat[i, j] - rowi * rowj) / sqrt((1 - rowi^2) * (1 - rowj^2)) 
+    tmp.zvals <- (0.5) * log((1 + tmp) / (1 - tmp)) 
+    tmp.s.zvals <- sqrt(n - 1 - 3) * tmp.zvals 
+    tmp.pvals <- 2 * pnorm(abs(tmp.s.zvals), 0, 1, lower.tail = FALSE) 
+    pcorrmat[i, j] <- max(tmp.pvals)
+  } 
+}
+
+pcorradjmat_BH <- matrix(p.adjust(pcorrmat, method = "BH", n = length(pcorrmat)), nrow = nrow(corr_mats[[group]]), ncol = nrow(corr_mats[[group]]))
+
+pcorr_graph_BH <- matrix(as.numeric(pcorradjmat_BH < 0.01), nrow = nrow(corr_mats[[group]]), ncol = nrow(corr_mats[[group]]))
+
+comm_mats[[group]]=pcorr_graph_BH
+#comm_mats[[group]] = matrix(rmTest(rowMeans(bootstrap)),nrow = no_of_taxa,ncol = no_of_taxa)
+#comm_mats[[group]] <- ceiling(0.5 * (comm_mats[[group]] + t(comm_mats[[group]])))
+graphRM <- graph_from_adjacency_matrix(comm_mats[[group]], mode = "undirected", weighted = NULL, diag = TRUE, add.colnames = NULL, add.rownames = NA)
+
+graph_list_org[[group]]=graphRM
+
+graphRM <- delete_vertices(simplify(graphRM), degree(graphRM)==0)
+
+V(graphRM)$frame.color <- "white"
+V(graphRM)$label <- ""
+V(graphRM)$color <- "orange"
+V(graphRM)$size <- 10
+E(graphRM)$arrow.mode <- 0
+
+graph_list_sim[[group]]=graphRM
+
+coordsRM = layout_with_fr(graphRM)
+
+
+
+
+print("Random Walk:")
+communities =  graphRM %>% 
+  cluster_walktrap(weights = NULL, steps = 4,
+  merges = TRUE, modularity = TRUE, membership = TRUE)
+plot(communities, graphRM, layout=coordsRM)
+print((communities))
+print("Betweenness:")
+communities = graphRM %>% 
+  cluster_edge_betweenness(weights = NULL, directed = FALSE,
+  edge.betweenness = TRUE, merges = TRUE, bridges = TRUE,
+  modularity = TRUE, membership = TRUE)
+plot(communities, graphRM, layout=coordsRM)
+print((communities))
+
+#print("Modularity:")
+#communities = graphRM %>% 
+#  cluster_optimal(weights = NULL)
+#plot(communities, graphRM, layout=coordsRM)
+#print((communities))
+
+print("Louvain:")
+communities = graphRM %>% 
+  cluster_louvain(weights = NULL)
+plot(communities, graphRM, layout=coordsRM)
+print((communities))
+
+
+print("Eigen:")
+communities = graphRM %>% 
+  cluster_leading_eigen(steps = -1, weights = NULL, start = NULL,
+  options = arpack_defaults, callback = NULL, extra = NULL,
+  env = parent.frame())
+plot(communities, graphRM, layout=coordsRM)
+print((communities))
+
+
+print("Greedy:")
+communities = graphRM %>% 
+  cluster_fast_greedy(merges = TRUE, modularity = TRUE,
+  membership = TRUE)
+plot(communities, graphRM, layout=coordsRM)
+print((communities))
+
+#print("Spinglass:")
+#communities = graph_from_adjacency_matrix(comm_mats[[group]], mode = "undirected", weighted = NULL, diag = TRUE, add.colnames = NULL, add.rownames = NA) %>% 
+#  cluster_spinglass(weights = NULL, vertex = NULL, spins = 25,
+#  parupdate = FALSE, start.temp = 1, stop.temp = 0.01, cool.fact = 0.99,
+#  update.rule = c("config", "random", "simple"), gamma = 1,
+#  implementation = c("orig", "neg"), gamma.minus = 1)
+#print((communities))
+
+
+  #cluster_edge_betweenness(weights = NULL, directed = FALSE,
+  #edge.betweenness = TRUE, merges = TRUE, bridges = TRUE,
+  #modularity = TRUE, membership = TRUE)
+#print((communities))
+#print(membership(communities))
+#comm_mats[[group]] = matrix(rmNegTest(rowMeans(bootstrap)),nrow = no_of_taxa,ncol = no_of_taxa)
+#comm_mats[[group]] <- ceiling(0.5 * (comm_mats[[group]] + t(comm_mats[[group]])))
+#communities = graph_from_adjacency_matrix(comm_mats[[group]], mode = "undirected", weighted = NULL, diag = TRUE, add.colnames = NULL, add.rownames = NA) %>% cluster_edge_betweenness(weights = NULL, directed = FALSE,
+#  edge.betweenness = TRUE, merges = TRUE, bridges = TRUE,
+#  modularity = TRUE, membership = TRUE)
+#print(membership(communities))
+
+
+#SBM
+library(mixer)
+set.seed(1)
+
+meta = read.table("/Users/anshumanswain/Downloads/Data_fossil.txt", sep="\t", header=TRUE, stringsAsFactors = F)
+meta.ordered <- meta[match(vertex_attr(graphRM)[["name"]], meta$NAME),]
+for (name in colnames(meta)){
+  graphRM <- set_vertex_attr(graphRM, name, index = V(graphRM), meta[,name])
+}
+
+graph_list_sim[[group]]=graphRM
+
+troint.sbm<- mixer(as.matrix(get.adjacency(graphRM)), qmin=3, qmax=20)
+troint.sbm.output <- getModel(troint.sbm)
+troint[[group]] = troint.sbm.output
+troint.sbm.output$q
+
+plot(troint.sbm, frame=1)
+plot(troint.sbm, frame=2)
+plot(troint.sbm, frame=3)
+
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$LIFE_HABIT1), frame=4, classes.col = unique(as.factor(V(graphRM)$LIFE_HABIT1)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$LIFE_HABIT1)), pch=c(16,16),col=unique(as.factor(V(graphRM)$LIFE_HABIT1)), cex=0.8, text.font=4, bg='white', title = "Habitat")
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$PHYLUM), frame=4, classes.col = unique(as.factor(V(graphRM)$PHYLUM)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$PHYLUM)), pch=c(16,16),col=unique(as.factor(V(graphRM)$PHYLUM)), cex=0.8, text.font=4, bg='white', title = "Phylum")
+
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$FEED1), frame=4, classes.col = unique(as.factor(V(graphRM)$FEED1)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$FEED1)), pch=c(16,16),col=unique(as.factor(V(graphRM)$FEED1)), cex=0.8, text.font=4, bg='white', title = "Feeding Habits")
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$MODE_MOV), frame=4, classes.col = unique(as.factor(V(graphRM)$MODE_MOV)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$MODE_MOV)), pch=c(16,16),col=unique(as.factor(V(graphRM)$MODE_MOV)), cex=0.8, text.font=4, bg='white', title = "Feeding Habits")
+
+plot(troint.sbm, classes=as.factor(V(graphRM)$FEED2), frame=4, classes.col = unique(as.factor(V(graphRM)$FEED2)))
+legend("bottomright", legend=levels(as.factor(V(graphRM)$FEED2)), pch=c(16,16),col=unique(as.factor(V(graphRM)$FEED2)), cex=0.8, text.font=4, bg='white', title = "Feeding Habits")
+
+}
+
+```
+
+
+
+
+```{r}
+feeder <-read.csv("/Users/anshumanswain/Downloads/Data_Fossil.csv")
+strata <- read.csv("fossil_counts_new2.csv")
+depth_ls <- strata$Depth
+taxon_ls <- strata$Taxon
+count_ls <- strata$count
+
+D<-feeder$FEED2
+
+time_series<- function(E, x){
+#of interest
+D<-E
+# 7m ~ 16m
+layer_ls <- matrix(0, nrow =length(levels(factor(unique(D)))), ncol = 22)
+fe2_ls <- matrix(0, nrow = length(levels(factor(unique(D)))), ncol = 22)
+
+species <- ""
+for (ii in 1:length(depth_ls)){
+  #preprocess
+  #start from 7meter, make it start from 1
+  jj <- ((as.integer(depth_ls[ii]*2))*0.5 - 6)*2
+  species <- as.character(D[feeder$NAME == as.character(taxon_ls[ii])])
+  now_count <- as.integer(count_ls[ii])
+  
+  for (g in 1:length(levels(factor(unique(D))))) {
+    if(length(species) == 1 && !is.na(species)){
+    if(species == levels(factor(unique(D)))[g]){
+      fe2_ls[g,jj] <- fe2_ls[g,jj] + now_count
+    }
+      else{
+      next
+    }}}}
+ 
+
+#take first 9 columns and count last 5 each columns as a single column
+to_plot <- cbind(fe2_ls[,(1:9)], as.matrix(rowSums(fe2_ls[,(11:16)])), as.matrix(rowSums(fe2_ls[,(17:22)])))
+matplot(x=as.matrix(c(seq(7,11,0.5),12, 14)),y=t(to_plot), type = c("b"),pch=1:length(levels(unique(D))),col = 1:length(levels(unique(D))), 
+        xlab="m",ylab="abundance",main="Fossil abundance of different types") #plot
+types <- c(levels(unique(D)))
+legend("topright", legend = types, col=1:length(levels(factor(unique(D)))), pch=1:length(levels(factor(unique(D))))) # optional legend
+
+#plot difference
+diff_mat <- matrix(0,length(levels(factor(unique(D)))),ncol(to_plot)-1)
+for (kk in 1:ncol(diff_mat)) {
+  diff_mat[,kk] <- as.matrix(to_plot[,kk+1] - to_plot[,kk])
+}
+
+matplot(x=as.matrix(c(seq(7.5,11,0.5),12, 14)), y=t(diff_mat), type = c("b"), pch=1:length(levels(factor(unique(D)))),col = 1:length(levels(factor(unique(D)))), xlab="intervals",ylab="abundance",main=x) #plot
+types <- c(levels(factor(unique(D))))
+legend("topright", legend = types, col=1:length(levels(factor(unique(D)))), pch=1:length(levels(factor(unique(D)))))
+
+return(c(cor(diff_mat[2,], diff_mat[4,]), cor(diff_mat[2,], diff_mat[1,]), cor(fe2_ls[2,], fe2_ls[4,]+fe2_ls[1,]), plot((fe2_ls[4,]+fe2_ls[1,])/fe2_ls[2,])))
+
+
+}
+
+
+time_series(feeder$FEED2,"Time-dependence of fossil abundance of different feed types")
+
+```
+
+```{r}
+time_series(feeder$FEED1,"Time-dependence of fossil abundance of different feed types")
+```
+
+```{r}
+time_series(feeder$LIFE_HABIT1,"Time-dependence of fossil abundance of different habitat types")
+```
+
+```{r}
+likSingle1 = function(parameters, x) dnorm(x, mean = parameters["mu1"],sd = parameters["sd1"])
+llikAll1 = function(parameters, x){
+  if (parameters["sd1"] < 0)
+  {-Inf}
+  else{sum(log(likSingle1(parameters, x)))}}
+
+likSingle3 = function(parameters, x){dnorm(x, mean = parameters["mu1"], sd = parameters["sd1"]) * parameters["p1"] +dnorm(x, mean = parameters["mu2"], sd = parameters["sd2"]) *parameters["p2"] + dnorm(x, mean = parameters["mu3"],sd = parameters["sd3"]) * (1 - parameters["p1"] - parameters["p2"])}
+
+llikAll3 = function(parameters, x){
+  if (parameters["p1"] < 0 || parameters["p1"] > 1 || parameters["p2"] <0 || parameters["p2"] > 1 || parameters["p1"] + parameters["p2"] >1 || parameters["sd1"] < 0 || parameters["sd2"] < 0 || parameters["sd3"]<0){-Inf}
+  else{sum(log(likSingle3(parameters, x)))}}
+
+parameterInitialVals = c(mu1 = 0, sd1 = 0.5, mu2 = 1, sd2 = 0.6, mu3 = -0.5,sd3 = 0.1, p1 = 0.8, p2 = 0.1)
+o = optim(par = parameterInitialVals, fn = llikAll3, x = corr_mats$A[corr_mats$A!=0],control = list(fnscale = -1))
+
+
+MLE = o$par
+MLE
+
+parameterInitialVals = c(mu1 = 0, sd1 = 0.5, mu2 = 1, sd2 = 0.6, mu3 = -0.5,sd3 = 0.1, p1 = 0.8, p2 = 0.1)
+o = optim(par = parameterInitialVals, fn = llikAll3, x = corr_mats$B[corr_mats$B!=0],control = list(fnscale = -1))
+
+
+MLE = o$par
+MLE
+
+parameterInitialVals = c(mu1 = 0, sd1 = 0.5, mu2 = 1, sd2 = 0.6, mu3 = -0.5,sd3 = 0.1, p1 = 0.8, p2 = 0.1)
+o = optim(par = parameterInitialVals, fn = llikAll3, x = corr_mats$C[corr_mats$C!=0],control = list(fnscale = -1))
+
+
+MLE = o$par
+MLE
+
+parameterInitialVals = c(mu1 = 0, sd1 = 0.5, mu2 = 1, sd2 = 0.6, mu3 = -0.5,sd3 = 0.1, p1 = 0.8, p2 = 0.1)
+o = optim(par = parameterInitialVals, fn = llikAll3, x = corr_mats$D[corr_mats$D!=0],control = list(fnscale = -1))
+
+
+MLE = o$par
+MLE
+```
+
+```{r}
+corr_mats$A[!is.finite(corr_mats$A)] <- 0
+hist(corr_mats$A[corr_mats$A!=0], freq=F)
+lines(seq(-1, 1, by=.1), dnorm(seq(-1, 1, by=.1),
+      mean(corr_mats$A[corr_mats$A!=0]), sd(corr_mats$A[corr_mats$A!=0])), col="blue")
+
+corr_mats$B[!is.finite(corr_mats$B)] <- 0
+hist(corr_mats$B[corr_mats$B!=0], freq=F)
+lines(seq(-1, 1, by=.1), dnorm(seq(-1, 1, by=.1),
+      mean(corr_mats$B[corr_mats$B!=0]), sd(corr_mats$B[corr_mats$B!=0])), col="blue")
+
+library(e1071)
+skewness(corr_mats$A[corr_mats$A!=0])
+
+skewness(corr_mats$B[corr_mats$B!=0])
+
+corr_mats$C[!is.finite(corr_mats$C)] <- 0
+skewness(corr_mats$C[corr_mats$C!=0])
+
+corr_mats$D[!is.finite(corr_mats$D)] <- 0
+skewness(corr_mats$D[corr_mats$D!=0])
+
+
+plot(density(corr_mats$A[corr_mats$A!=0], na.rm = TRUE, from = -1, to= 1), main = "Distribution of correlations")
+lines(density(corr_mats$B[corr_mats$B!=0], na.rm = TRUE, from = -1, to= 1), col="red")
+lines(density(corr_mats$C[corr_mats$C!=0], na.rm = TRUE, from = -1, to= 1), col="green")
+lines(density(corr_mats$D[corr_mats$D!=0], na.rm = TRUE, from = -1, to= 1), col="blue")
+abline(v=c(0.75, 0.84, 0.89, 0.83), lty=2, col="red")
+abline(v=c(0.58, 0.52), lty=2, col="orange")
+abline(v=c( 0.2, 0.24), lty=2, col="blue")
+abline(v=c( -0.39, -0.43, -0.47, -0.21), lty=2, col="black")
+
+```
+
+```{r}
+hist(corr_mats$D[corr_mats$D!=0], breaks = 50, col=rgb(1,0,0,0.5),xlim=c(-1,1), ylim=c(0,6), freq=F, main="", xlab = "Pairwise correlation", cex.lab=2, cex.axis=2)
+hist(corr_mats$A[corr_mats$A!=0], breaks = 50, col=rgb(0,1,0,0.5), add=T, freq=F)
+hist(corr_mats$B[corr_mats$B!=0], breaks = 100, col=rgb(0,0,1,0.5), add=T, freq=F)
+hist(corr_mats$C[corr_mats$C!=0], breaks = 100, col=rgb(1,1,0,0.5), add=T, freq=F)
+abline(v=c(0.79, 0.84, 0.89, 0.83), lty=2, col="purple")
+abline(v=c(0.58, 0.52, 0.61, 0.615), lty=2, col="orange")
+abline(v=c( 0.26, 0.28, 0.31, 0.32), lty=2, col="blue")
+abline(v=c( -0.39, -0.29, -0.25, -0.21), lty=2, col="black")
+
+
+
+
+
+```
+
+
+
+```{r}
+#define depth groups as discussed A,B,C,D
+
+#number of taxa in the dataset
+no_of_taxa = length(unique(Count_data$Taxon))
+
+#define an empty list of adjacency matrices. (This is where the results are stored)
+corr_mats2 = list()
+MLES= matrix(0, 11, 8)
+skew_meas= numeric(11)
+
+#loop through each group
+for(group in 1:10){
+  
+#generate a count matrix for current group
+mat = matrix(0,0,length(unique(Count_data$Taxon)))
+
+#start and end depth of the group
+start = 7 + 0.5*group
+end = 8 + 0.5*group
+
+#extract counts in chunks of 30cm
+for(i in seq(start,(end-0.2),0.2)){
+  r = rep(0,no_of_taxa); names(r) = unique(Count_data$Taxon)
+  for(j in seq(i,i+0.1,0.1)){
+    idx = which(depth == j)
+    r[Count_data$Taxon[idx]] = r[Count_data$Taxon[idx]] + Count_data$count[idx]
+  }
+  mat = rbind(mat,r)
+}
+
+#generate pseudo-counts by random bootstrap process, 1000 iterations
+bootstrap = sapply(seq(1000), function(i){
+  null = t(apply(mat,1,function(x) {
+    #obtain rl string for the stratum
+    rlstr = c()
+    new_count = rep(0,ncol(mat)); names(new_count) = unique(Count_data$Taxon)
+    for(count in x){
+      if(count > 0){
+        idx = which(x == count)
+        rlstr = c(rlstr,rep(unique(Count_data$Taxon)[idx],count))
+      }
+    }
+    #sanity check: see if any fossils exist at this level
+    if(length(rlstr) > 0){
+      #perform a sample with replacement
+      rlstr = sample(rlstr,replace = T)
+      counts = table(rlstr)
+      new_count[names(counts)] = counts
+      return(as.numeric(new_count))
+    }
+    else{
+      return(x)
+    }
+  }))
+  #obtain fossil co-abundance adjacency matrix based on pseudo counts
+  cc = suppressWarnings(cor(null))
+  
+  #set diagnals of the matrix to 0
+  diag(cc) = 0
+  
+  #return adjacency matrix flattened as a vector
+  return(as.vector(cc))
+})
+
+corr_mats2[[group]] = matrix(rowMeans(bootstrap),nrow = no_of_taxa,ncol = no_of_taxa)
+
+corr_mats2[[group]][!is.finite(corr_mats2[[group]])] <- 0
+skew_meas[group] = skewness(corr_mats2[[group]][corr_mats2[[group]]!=0])
+
+likSingle1 = function(parameters, x) dnorm(x, mean = parameters["mu1"],sd = parameters["sd1"])
+llikAll1 = function(parameters, x){
+  if (parameters["sd1"] < 0)
+  {-Inf}
+  else{sum(log(likSingle1(parameters, x)))}}
+
+likSingle3 = function(parameters, x){dnorm(x, mean = parameters["mu1"], sd = parameters["sd1"]) * parameters["p1"] +dnorm(x, mean = parameters["mu2"], sd = parameters["sd2"]) *parameters["p2"] + dnorm(x, mean = parameters["mu3"],sd = parameters["sd3"]) * (1 - parameters["p1"] - parameters["p2"])}
+
+llikAll3 = function(parameters, x){
+  if (parameters["p1"] < 0 || parameters["p1"] > 1 || parameters["p2"] <0 || parameters["p2"] > 1 || parameters["p1"] + parameters["p2"] >1 || parameters["sd1"] < 0 || parameters["sd2"] < 0 || parameters["sd3"]<0){-Inf}
+  else{sum(log(likSingle3(parameters, x)))}}
+
+parameterInitialVals = c(mu1 = 0, sd1 = 0.5, mu2 = 1, sd2 = 0.6, mu3 = -0.5,sd3 = 0.1, p1 = 0.8, p2 = 0.1)
+o = optim(par = parameterInitialVals, fn = llikAll3, x = corr_mats2[[group]][corr_mats2[[group]]!=0],control = list(fnscale = -1))
+
+for (jj in 1:8) {
+  MLES[group,jj]= o$par[jj]
+}
+ 
+}
+
+plot(skew_meas)
+```
+
+```{r}
+depth_ls <- strata$Depth
+taxon_ls <- strata$Taxon
+tot_ls <- numeric(11)
+tot_ls2 <- numeric(11)
+tot_ls3 <- numeric(11)
+skew_meas2 = numeric(11)
+skew_meas3 = numeric(11)
+for (i in 1:11) {
+  depth0<- depth_ls-7-0.5*i
+  deptht<- as.integer(depth0)
+  tot_ls[i+1]= sum(count_ls[deptht==1])
+  tot_ls3[i] <- (tot_ls[i+1]-tot_ls[i])/tot_ls[i]
+  tot_ls2[i] <- sign(round(5*(tot_ls[i+1]-tot_ls[i])/tot_ls[i]))
+  skew_meas3[i]<- skew_meas[i+1]-skew_meas[i]
+  skew_meas2[i]<- sign(skew_meas[i+1]-skew_meas[i])
+}
+
+plot(tot_ls2[1:9], pch=16,  ylim = c(-2,1))
+par(new=TRUE)
+plot(skew_meas2[1:9], col= "red", pch=16, xlab="", ylab="", ylim = c(-2,1))
+
+plot(skew_meas)
+plot(tot_ls)
+
+plot(tot_ls3[1:9], pch=16,  ylim = c(-2,1))
+par(new=TRUE)
+plot(skew_meas3[1:9], col= "red", pch=16, xlab="", ylab="", ylim = c(-2,1))
+```
+
+
+
+```{r}
+#timeline series of all taxa and their abundance
+
+depth_ls <- strata$Depth
+taxon_ls <- strata$Taxon
+count_ls <- strata$count
+
+D<-feeder$FEED2
+set.seed(1)
+
+#of interest
+
+# 7m ~ 16m
+name_num<-matrix(0, nrow = length(unique(feeder$NAME)), ncol = length(unique(depth_ls)))
+rownames(name_num)<- unique(feeder$NAME)
+colnames(name_num)<- unique(depth_ls)
+species <- ""
+for (ii in 1:length(depth_ls)){
+  #preprocess
+  #start from 7meter, make it start from 1
+  species <- as.character(feeder$NAME[feeder$NAME == as.character(taxon_ls[ii])])
+  now_count <- as.integer(count_ls[ii])
+  name_num[species,which(unique(depth_ls)==depth_ls[ii])]<-name_num[species,which(unique(depth_ls)==depth_ls[ii])]+now_count
+  
+  }
+```
+
+```{r}
+err1 <-read.csv("/Users/anshumanswain/Downloads/err_begin.csv")
+with(err1, plot(err1$stratum, err1$pvalue, type="b", col="red3", pch=16, xlab="stratum number",
+             ylab="p-value"))
+abline(h=0.1, lty=5, col="red")
+par(new = T)
+with(err1, plot(err1$stratum, err1$numbers, pch=16, axes=F, xlab="stratum number", ylab=NA, type="b"))
+axis(side = 4)
+mtext(side = 4, line = 3, "Abundance")
+legend("topleft", cex=0.8,
+       legend=c("p-value", "Abundance"),
+       lty=c(1,1), pch=c(16, 16), col=c("red3", "black"))
+
+```
+
+```{r}
+err2 <-read.csv("/Users/anshumanswain/Downloads/err_end.csv")
+with(err1, plot(err2$stratum, err2$pvalue, type="b", col="red3", pch=16, xlab="stratum number",
+             ylab="p-value"))
+abline(h=0.1, lty=5, col="red")
+par(new = T)
+with(err1, plot(err2$stratum, err2$numbers, pch=16, axes=F, xlab="stratum number", ylab=NA, type="b"))
+axis(side = 4)
+mtext(side = 4, line = 3, "Abundance")
+legend("topright", cex=0.8,
+       legend=c("p-value", "Abundance"),
+       lty=c(1,1), pch=c(16, 16), col=c("red3", "black"))
+
+```
+
+
+
+
+
+
