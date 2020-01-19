@@ -1,0 +1,63 @@
+---
+title: "main-code3"
+author: "Anshuman"
+date: "1/19/2020"
+output: html_document
+---
+
+```{r}
+depth_ls <- strata$Depth
+taxon_ls <- strata$Taxon
+tot_ls <- numeric(11)
+tot_ls2 <- numeric(11)
+tot_ls3 <- numeric(11)
+skew_meas2 = numeric(11)
+skew_meas3 = numeric(11)
+for (i in 1:11) {
+  depth0<- depth_ls-7-0.5*i
+  deptht<- as.integer(depth0)
+  tot_ls[i+1]= sum(count_ls[deptht==1])
+  tot_ls3[i] <- (tot_ls[i+1]-tot_ls[i])/tot_ls[i]
+  tot_ls2[i] <- sign(round(5*(tot_ls[i+1]-tot_ls[i])/tot_ls[i]))
+  skew_meas3[i]<- skew_meas[i+1]-skew_meas[i]
+  skew_meas2[i]<- sign(skew_meas[i+1]-skew_meas[i])
+}
+
+plot(tot_ls2[1:9], pch=16,  ylim = c(-2,1))
+par(new=TRUE)
+plot(skew_meas2[1:9], col= "red", pch=16, xlab="", ylab="", ylim = c(-2,1))
+
+plot(skew_meas)
+plot(tot_ls)
+
+plot(tot_ls3[1:9], pch=16,  ylim = c(-2,1))
+par(new=TRUE)
+plot(skew_meas3[1:9], col= "red", pch=16, xlab="", ylab="", ylim = c(-2,1))
+```
+
+```{r}
+#timeline series of all taxa and their abundance
+
+depth_ls <- strata$Depth
+taxon_ls <- strata$Taxon
+count_ls <- strata$count
+
+D<-feeder$FEED2
+set.seed(1)
+
+#of interest
+
+# 7m ~ 16m
+name_num<-matrix(0, nrow = length(unique(feeder$NAME)), ncol = length(unique(depth_ls)))
+rownames(name_num)<- unique(feeder$NAME)
+colnames(name_num)<- unique(depth_ls)
+species <- ""
+for (ii in 1:length(depth_ls)){
+  #preprocess
+  #start from 7meter, make it start from 1
+  species <- as.character(feeder$NAME[feeder$NAME == as.character(taxon_ls[ii])])
+  now_count <- as.integer(count_ls[ii])
+  name_num[species,which(unique(depth_ls)==depth_ls[ii])]<-name_num[species,which(unique(depth_ls)==depth_ls[ii])]+now_count
+  
+  }
+```
