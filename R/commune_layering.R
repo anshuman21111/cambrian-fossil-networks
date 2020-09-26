@@ -54,9 +54,6 @@ update_blanket <- function(blanket, removal = NULL) {
   )
 }
 
-#' Causal Emergence
-#'
-#' Calculates casual emergence.
 #'
 #' @param x igraph or matrix object.
 #' @param ... Span, and threshold parameters
