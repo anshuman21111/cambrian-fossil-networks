@@ -33,7 +33,7 @@ stationary <- function(graph, zero_cutoff = 1e-10) {
   B <- c(rep(0, rows), 1)
 
   P <- stats::lm(B ~ 0 + A)$coefficients
-  P[P < zero_cutoff] <- 0
+  P[P < zero_cutoff] <- 0 
   P[is.na(P)] <- 0
 
   if (sum(P) != 0 && sum(P) != 1) {
