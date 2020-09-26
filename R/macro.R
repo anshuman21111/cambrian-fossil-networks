@@ -1,8 +1,6 @@
 #' create_macro
 #'
 #' @param graph igraph
-#' @param mapping List mapping from micro to macro nodes.
-#' @param macro_types List of node distribution types.
 #' @param ... Passed arguments.
 create_macro <- function(graph, mapping, macro_types, ...) {
   assertthat::assert_that(length(mapping) > 0, msg = 'Macro mapping missing.')
