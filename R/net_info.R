@@ -1,5 +1,5 @@
 
-ef_inf <- function(graph, effectiveness = FALSE) UseMethod("effective_information")
+ef_inf<- function(graph, effectiveness = FALSE) UseMethod("effective_information")
 
 #' @export
 ef_inf.matrix <- function(graph, effectiveness = FALSE) {
