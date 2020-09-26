@@ -15,8 +15,7 @@ effective_information(graph, effectiveness = FALSE)
 Numeric value indicating the effective information of the network.
 }
 \description{
-Calculates the effective information (EI) of a network, \eqn{G}, according to
-the definition provided in Klein & Hoel, 2019. Here, we subtract the
+Calculates the effective infor (EI) of a network, we subtract the
 average entropies of the out-weights of nodes in a network, WOUT_average
 from the entropy of the average out-weights in the network, WIN_entropy.
 \deqn{EI = H[\langle W_i^{out} \rangle] - \langle H[W_i^{out}] \rangle}
